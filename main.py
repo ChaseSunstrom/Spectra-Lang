@@ -14,15 +14,15 @@ reserved = {
     'namespace': 'NAMESPACE', 'ref': 'REF', 'analyze': 'ANALYZE', 'move': 'MOVE',
     'copy': 'COPY', 'operator': 'OPERATOR', 'macro': 'MACRO', 'const': 'CONST',
     'static': 'STATIC', 'defer': 'DEFER', 'unsafe': 'UNSAFE', 'export': 'EXPORT',
-    'var': 'VAR'
+    'var': 'VAR', 'async': 'ASYNC', 'await': 'AWAIT'
 }
 
 tokens = [
-    'NUMBER', 'STRING', 'ID', 'ASSIGN', 'SEMI', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD',
-    'ARM', 'POINTER', 'REFERENCE', 'LTHEN', 'RTHEN', 'LBRACKET', 'RBRACKET',
-    'LEQ', 'GEQ', 'NEQ', 'EQ', 'OR', 'AND', 'AT',
+    'NUMBER', 'STRING', 'ID', 'ASSIGN', 'SEMI', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'ALL',
+    'ARM', 'POINTER', 'REFERENCE', 'LTHEN', 'RTHEN', 'LBRACKET', 'RBRACKET', 'DOUBLE_COLON',
+    'LEQ', 'GEQ', 'NEQ', 'EQ', 'OR', 'AND', 'AT', 'NOT',
     'LBRACE', 'RBRACE', 'LPAREN', 'RPAREN', 'LANGLE', 'RANGLE', 'RANGE', 'RANGE_INCLUSIVE',
-    'COMMA', 'ARROW'
+    'COMMA', 'ARROW', 'UNDERSCORE'
 ] + list(reserved.values())
 
 symbol_table = {}
@@ -31,10 +31,21 @@ def add_to_symbol_table(name, obj_type):
     symbol_table[name] = obj_type
 
 def lookup_symbol_table(name):
-    return symbol_table.get(name, None)
+    return symbol_table.get(str(name), None)
 
+precedence = (
+    ('left', 'OR'),
+    ('left', 'AND'),
+    ('left', 'EQ', 'NEQ'),  # Non-associative operators
+    ('left', 'LTHEN', 'RTHEN', 'LEQ', 'GEQ'),
+    ('left', 'PLUS', 'MINUS'),
+    ('left', 'TIMES', 'DIVIDE'),
+)
 
 # Tokens rules
+t_DOUBLE_COLON = r'::'
+t_NOT = r'!'
+t_ALL = r'\*'
 t_PLUS = r'\+'
 t_MINUS = r'-'
 t_TIMES = r'\*'
@@ -63,6 +74,7 @@ t_REF = r'&'
 t_POINTER = r'\*'
 t_RANGE = r'..'
 t_RANGE_INCLUSIVE = r'..='
+t_UNDERSCORE = r'_'
 
 def t_STRING(t):
     r'"[^"]*"'
@@ -90,7 +102,7 @@ def t_newline(t):
 t_ignore = ' \t'
 
 def t_error(t):
-    print("Illegal character '%s'" % t.value[0])
+    print(f"Illegal character {t.value[0]}, at line {t.lexer.lineno}")
     t.lexer.skip(1)
 
 lexer = lex.lex()
@@ -105,6 +117,7 @@ def p_program(p):
     else:
         p[0] = [p[1]]
 
+
 def p_statement(p):
     '''statement : function_definition
                  | class_definition
@@ -115,6 +128,11 @@ def p_statement(p):
                  | interface_definition
                  | return_statement SEMI'''
     p[0] = p[1]
+def p_expression_boolean_literals(p):
+    '''expression : TRUE
+                  | FALSE'''
+    p[0] = ('bool_literal', p[1] == 'true')
+
 
 def p_namespace_definition(p):
     '''namespace_definition : NAMESPACE ID LBRACE program RBRACE
@@ -125,22 +143,26 @@ def p_return_statement(p):
     '''return_statement : RETURN expression'''
     p[0] = ('return_stmt', p[2])
 
+def p_block(p):
+    '''block : LBRACE program RBRACE'''
+    p[0] = p[2]
 
-def p_generics_opt(p):
-    '''generics_opt : LANGLE generics_list RANGLE
-                    | empty'''
-    if len(p) == 4:
-        p[0] = ('generics', p[2])  # Capture the list of generic parameters
-    else:
-        p[0] = []  # No generic parameters
+def p_type_with_generics(p):
+    '''type_with_generics : ID LANGLE type_list RANGLE
+                          | ID empty'''
 
-def p_generics_list(p):
-    '''generics_list : generics_list COMMA ID
-                     | ID'''
-    if len(p) == 4:
-        p[0] = p[1] + [p[3]]  # Append the ID to the list of generics
+    if len(p) == 5:
+        p[0] = ('type_with_generics', p[1], p[3])
     else:
-        p[0] = [p[1]]  # Start a new list with the single ID
+        p[0] = ('type_with_generics', p[1])
+
+def p_type_list(p):
+    '''type_list : type_list COMMA type_specifier
+                 | type_specifier'''
+    if len(p) == 4:
+        p[0] = p[1] + [p[3]]
+    else:
+        p[0] = [p[1]]
 
 # Class body with variables and functions
 def p_class_body(p):
@@ -189,7 +211,7 @@ def p_enum_member(p):
         p[0] = ('enum_variant_val', p[1], p[3])
 
 def p_extends_opt(p):
-    '''extends_opt : EXTENDS ID generics_opt
+    '''extends_opt : EXTENDS type_with_generics
                    | empty'''
     if len(p) == 4:
         p[0] = ('extends', p[2], p[3])  # Capture the extended class ID and generics
@@ -198,6 +220,7 @@ def p_extends_opt(p):
 
 def p_type_specifier(p):
     '''type_specifier : ID
+                      | type_with_generics
                       | POINTER type_specifier
                       | REF type_specifier'''
     if len(p) == 2:
@@ -215,8 +238,10 @@ def p_expression_boolean(p):
                   | expression LTHEN expression
                   | expression RTHEN expression
                   | expression LEQ expression
-                  | expression GEQ expression'''
-    p[0] = ('bool_expr', p[2], p[1], p[3])
+                  | expression GEQ expression
+                  | NOT expression'''
+    if len(p) == 4:
+        p[0] = ('bool_expr', p[2], p[1], p[3])
 
 def p_for_loop(p):
     '''statement : FOR ID IN expression RANGE expression LBRACE program RBRACE'''
@@ -264,6 +289,69 @@ def p_conditional_statement(p):
     else:
         p[0] = ('if_else_stmt', p[3], p[6], p[10])
 
+def p_match_statement(p):
+    '''statement : MATCH LPAREN expression RPAREN LBRACE match_cases RBRACE'''
+    p[0] = ('match_statement', p[3], p[6])
+
+def p_match_cases(p):
+    '''match_cases : match_cases match_case
+                   | match_case'''
+    if len(p) == 3:
+        p[0] = p[1] + [p[2]]
+    else:
+        p[0] = [p[1]]
+
+def p_match_case(p):
+    '''match_case : pattern ARM program SEMI'''
+    p[0] = ('match_case', p[1], p[3])
+
+def p_pattern(p):
+    '''pattern : simple_pattern
+               | tuple_pattern'''
+    p[0] = p[1]
+
+def p_simple_pattern(p):
+    '''simple_pattern : ID
+                      | NUMBER
+                      | STRING
+                      | UNDERSCORE'''
+    p[0] = ('simple_pattern', p[1])
+
+def p_tuple_pattern(p):
+    '''tuple_pattern : LPAREN pattern_list RPAREN'''
+    p[0] = ('tuple_pattern', p[2])
+
+def p_pattern_list(p):
+    '''pattern_list : pattern_list COMMA pattern
+                    | pattern'''
+    if len(p) == 4:
+        p[0] = p[1] + [p[3]]
+    else:
+        p[0] = [p[1]]
+
+def p_qualified_name(p):
+    '''qualified_name : qualified_name DOUBLE_COLON ID
+                      | ID'''
+    if len(p) == 4:
+        # Concatenate the qualified name with the next identifier
+        p[0] = ('qualified_name', p[1], p[3])
+    else:
+        # Single identifier
+        p[0] = ('qualified_name', p[1])
+
+def p_use_statement(p):
+    '''use_statement : USE qualified_name SEMI'''
+    p[0] = ('use_module', p[2])
+
+
+def p_async_function_definition(p):
+    '''function_definition : ASYNC FN ID LPAREN parameters_opt RPAREN return_type_opt LBRACE program RBRACE'''
+    p[0] = ('async_function_def', p[3], p[5], p[7], p[9])
+
+def p_expression_await(p):
+    '''expression : AWAIT expression'''
+    p[0] = ('await_expression', p[2])
+
 def p_while_loop(p):
     '''statement : WHILE LPAREN expression RPAREN LBRACE program RBRACE'''
     p[0] = ('while_loop', p[3], p[6])
@@ -310,26 +398,68 @@ def p_return_type_opt(p):
     if len(p) == 3:
         p[0] = ('return_type', p[2])
     else:
-        p[0] = None
+        p[0] = ('return_type', 'void')
 
 def p_function_definition(p):
-    '''function_definition : FN generics_opt ID LPAREN parameters_opt RPAREN return_type_opt LBRACE program RBRACE'''
-    '''                    | FN ID LPAREN parameters_opt RPAREN return_type_opt LBRACE RBRACE'''
-    p[0] = ('function_def', p[2], p[3], p[4],p[5], p[6],p[7], p[9])
+    '''function_definition : FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt LBRACE program RBRACE
+                           | FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt LBRACE RBRACE'''
+    function_name = p[2][1]  # Assuming the function name is always present
+    # No need for parentheses in the output, they're part of the syntax, not the data structure
+
+    parameters = p[4]  # Directly take the parameters list
+    return_type = p[6]  # Capture the return type, which could be None or a specific type
+
+    # For the function body, check if it's empty or contains statements
+    function_body = p[8] if len(p) > 8 else None
+
+    p[0] = ('function_def', function_name, parameters, return_type, function_body)
+
 
 def p_class_definition(p):
-    '''class_definition : CLASS ID generics_opt extends_opt LBRACE class_body RBRACE'''
-    if p[4] is not None and p[4][2] is not None:
-        extended_class_generics = p[4][2]
-        p[6] = [(member[0], member[1], member[2] if len(member) > 2 else None) for member in p[6]]
+    '''class_definition : CLASS type_with_generics extends_opt LBRACE class_body RBRACE'''
+    # Assuming type_with_generics could return either ('type_with_generics', ID, [generics])
+    # or just (ID,) when there are no generics
+    if isinstance(p[2], tuple) and len(p[2]) == 3:
+        # When generics are present
+        class_name = p[2][1]
+        class_generics = p[2][2]  # The generics list
+    elif isinstance(p[2], tuple) and len(p[2]) == 2:
+        # When there are no generics, and the rule returns a tuple with only ID
+        class_name = p[2][1]
+        class_generics = None
     else:
-        pass
-    add_to_symbol_table(p[2], 'class')
-    p[0] = ('class_def', p[2], p[3], p[4], p[6])
+        # Fallback in case the structure is different than expected, adjust as necessary
+        class_name = p[2]
+        class_generics = None
+
+    extends_info = p[3]  # This is either None or a tuple ('extends', base_class_id, [base_class_generics])
+
+    if extends_info is not None and len(extends_info) > 1:
+        # Extract base class ID and optionally generics if provided
+        base_class_id = extends_info[1]
+        base_class_generics = extends_info[2] if len(extends_info) == 3 else None
+    else:
+        base_class_id = None
+        base_class_generics = None
+
+    # Updating the symbol table to include the new class definition
+    add_to_symbol_table(class_name, 'class')
+
+    # Construct the tuple for the class definition including all the extracted information
+    p[0] = ('class_def', class_name, class_generics, base_class_id, base_class_generics, p[5])
+
 
 def p_statement_error(p):
     '''statement : variable_declaration '''
-    print(f"Error: missing semicolon at line {p.lineno(1)}")
+    p[0] = p[1]
+
+def p_statement_assign(p):
+    'statement : ID ASSIGN expression'
+    p[1] = p[3]
+
+def p_statement_expr(p):
+    'statement : expression'
+    print(p[1])
 
 
 def p_expression_error(p):
@@ -344,21 +474,30 @@ def p_expression_error(p):
 def p_variable_declaration(p):
     '''variable_declaration : type_specifier ID LPAREN arg_list_opt RPAREN SEMI
                             | type_specifier ID SEMI
-                            | type_specifier ID ASSIGN type_specifier LPAREN arg_list_opt RPAREN SEMI
+                            | type_specifier ID ASSIGN expression SEMI
                             | type_specifier ID LBRACE arg_list_opt RBRACE SEMI
                             | type_specifier ID ASSIGN NEW type_specifier LPAREN arg_list_opt RPAREN SEMI'''
-    obj_type = lookup_symbol_table(p[1])
-    if len(p) == 10 and obj_type in ['class', 'struct', 'enum']:
-        p[0] = ('dynamic_object_instantiation', obj_type, p[1], p[2])
-    elif len(p) == 10:
-        p[0] = ('dynamic_variable_instantiation', obj_type, p[1], p[2])
-    elif obj_type in ['class', 'struct', 'enum']:
-        p[0] = ('object_instantiation', p[1], p[2])
-    else:
-        p[0] = ('variable_instantiation', p[1], p[2])
+
+    if len(p) == 4:  # Simple variable declaration: type_specifier ID SEMI
+        p[0] = ('variable_declaration', p[1], p[2])
+    elif len(p) == 6 and p[3] == 'ASSIGN':  # Simple assignment: type_specifier ID ASSIGN expression SEMI
+        p[0] = ('variable_assignment', p[1], p[2], p[4])
+    elif len(p) == 7:  # Object instantiation without assignment: type_specifier ID LBRACE arg_list_opt RBRACE SEMI
+        obj_type = lookup_symbol_table(p[1])
+        if obj_type in ['class', 'struct', 'enum']:
+            p[0] = ('object_instantiation', obj_type, p[1], p[2], p[4])
+        else:
+            raise SyntaxError(f"Type {p[1]} not a class, struct, or enum for instantiation.")
+    elif len(p) == 10:  # Variable declaration with 'new' for dynamic instantiation
+        obj_type = lookup_symbol_table(p[1])
+        if p[4] == "NEW":  # With 'new': type_specifier ID ASSIGN NEW type_specifier LPAREN arg_list_opt RPAREN SEMI
+            p[0] = ('object_dynamic_instantiation', obj_type, p[1], p[2], p[5], p[7])
+        else:
+            p[0] = ('variable_dynamic_instantiation', p[1], p[2], p[4], p[6])
+
 
 def p_interface_definition(p):
-    '''interface_definition : INTERFACE ID generics_opt LBRACE interface_body RBRACE'''
+    '''interface_definition : INTERFACE type_with_generics LBRACE interface_body RBRACE'''
     p[0] = ('interface_def', p[2], p[3], p[5])
 
 def p_interface_body(p):
@@ -370,7 +509,7 @@ def p_interface_body(p):
         p[0] = []
 
 def p_struct_definition(p):
-    '''struct_definition : CLASS ID generics_opt extends_opt LBRACE struct_body RBRACE'''
+    '''struct_definition : CLASS type_with_generics extends_opt LBRACE struct_body RBRACE'''
     if p[4] is not None and p[4][2] is not None:
         extended_class_generics = p[4][2]
         p[6] = [(member[0], member[1], member[2] if len(member) > 2 else None) for member in p[6]]
@@ -380,7 +519,7 @@ def p_struct_definition(p):
     p[0] = ('struct_def', p[2], p[3], p[4], p[6])
 
 def p_enum_definition(p):
-    """enum_definition : ENUM ID generics_opt LBRACE enum_body RBRACE"""
+    """enum_definition : ENUM type_with_generics LBRACE enum_body RBRACE"""
     add_to_symbol_table(p[2], 'enum')
     p[0] = ('enum_def', p[2], p[4])
 
@@ -403,14 +542,26 @@ parser = yacc.yacc(debug=True)
 
 # Testing the parser
 test_data = '''
+use std::io;
+
 namespace my_namespace 
 {
-    fn main() {
-        
+    class my_class {
+        fn my_function() -> i32 {
+            
+        }
     }
+    
+    fn main() -> i32 {
+        i32 x = 1;
+        match (x) {
+            1 => 1;
+            2 => 2;
+            _ => 3;
+        }
+    }   
 }
 '''
-
 
 def print_ast(node, level=0):
     indent = "    " * level  # Define indentation (4 spaces per level)
@@ -418,32 +569,20 @@ def print_ast(node, level=0):
     if node is None:
         print(f"{indent}None")
     elif isinstance(node, tuple):
-        # Special handling for certain types of nodes (like variables)
-        if node[0] in ['variable_instantiation', 'dynamic_variable_instantiation',
-                       'dynamic_object_instantiation', 'object_instantiation']:
-            # Print variable instantiation with type and name
-            print(f"{indent}{node[0]} - Type: {node[1]}, Name: {node[2]}")
-            if len(node) > 3:
-                # If there are additional details (e.g., constructor arguments), print them
-                print(f"{indent}Arguments:")
-                for arg in node[3:]:
-                    print_ast(arg, level + 2)
-        else:
-            # Print the type of the node (first element of the tuple) with indentation
-            print(f"{indent}{node[0]}:")
-
-            # Recursively print each element in the tuple starting from the second element
+        print(f"{indent}{node[0]}:", end="")
+        if len(node) > 1:
+            print()  # Move to the next line for additional details
             for subnode in node[1:]:
-                if subnode not in ['{', '}']:  # Ignore braces
-                    print_ast(subnode, level + 1)
+                print_ast(subnode, level + 1)
+        else:
+            print(" Empty")  # Indicate that the node has no further details
     elif isinstance(node, list):
-        # Print each element in the list as a separate node
-        for i, subnode in enumerate(node):
-            print_ast(subnode, level)
+        if node:
+            for subnode in node:
+                print_ast(subnode, level)
     else:
-        # Print the value of the node if it is not a tuple or list
+        # Directly print the value of the node if it is not a tuple or list
         print(f"{indent}{node}")
-
 
 # Usage example
 ast = parser.parse(test_data)  # Assume this is your AST from the parser
