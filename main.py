@@ -10,33 +10,28 @@ reserved = {
     'continue': 'CONTINUE', 'pub': 'PUB', 'priv': 'PRIV',
     'match': 'MATCH', 'interface': 'INTERFACE', 'extends': 'EXTENDS',
     'override': 'OVERRIDE', 'new': 'NEW', 'delete': 'DELETE',
-    'try': 'TRY', 'catch': 'CATCH', 'finally': 'FINALLY',
+    'try': 'TRY', 'catch': 'CATCH', 'finally': 'FINALLY', 'i32': 'I32', 'i64': 'I64',
+    'f32': 'F32', 'f64': 'F64', 'u32': 'U32', 'u64': 'U64', 'bool': 'BOOL', 'void': 'VOID',
+    'var': 'VAR', 'string': 'STRING', 'i8': 'I8', 'i16': 'I16', 'i32': 'I32', 'i64': 'I64',
+    'u8': 'U8', 'u16': 'U16',
     'namespace': 'NAMESPACE', 'ref': 'REF', 'analyze': 'ANALYZE', 'move': 'MOVE',
     'copy': 'COPY', 'operator': 'OPERATOR', 'macro': 'MACRO', 'const': 'CONST',
     'static': 'STATIC', 'defer': 'DEFER', 'unsafe': 'UNSAFE', 'export': 'EXPORT',
-    'var': 'VAR', 'async': 'ASYNC', 'await': 'AWAIT'
+    'async': 'ASYNC', 'await': 'AWAIT'
 }
 
 tokens = [
-    'NUMBER', 'STRING', 'ID', 'ASSIGN', 'SEMI', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'ALL',
+    'NUMBER', 'ID', 'ASSIGN', 'SEMI', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'ALL',
     'ARM', 'POINTER', 'REFERENCE', 'LTHEN', 'RTHEN', 'LBRACKET', 'RBRACKET', 'DOUBLE_COLON',
     'LEQ', 'GEQ', 'NEQ', 'EQ', 'OR', 'AND', 'AT', 'NOT',
     'LBRACE', 'RBRACE', 'LPAREN', 'RPAREN', 'LANGLE', 'RANGLE', 'RANGE', 'RANGE_INCLUSIVE',
-    'COMMA', 'ARROW', 'UNDERSCORE'
+    'COMMA', 'ARROW', 'UNDERSCORE', 'INCREMENT', 'DECREMENT'
 ] + list(reserved.values())
-
-symbol_table = {}
-
-def add_to_symbol_table(name, obj_type):
-    symbol_table[name] = obj_type
-
-def lookup_symbol_table(name):
-    return symbol_table.get(str(name), None)
 
 precedence = (
     ('left', 'OR'),
     ('left', 'AND'),
-    ('left', 'EQ', 'NEQ'),  # Non-associative operators
+    ('left', 'EQ', 'NEQ'),
     ('left', 'LTHEN', 'RTHEN', 'LEQ', 'GEQ'),
     ('left', 'PLUS', 'MINUS'),
     ('left', 'TIMES', 'DIVIDE'),
@@ -72,9 +67,9 @@ t_ARM = r'=>'
 t_AT = r'@'
 t_REF = r'&'
 t_POINTER = r'\*'
-t_RANGE = r'..'
-t_RANGE_INCLUSIVE = r'..='
 t_UNDERSCORE = r'_'
+t_INCREMENT = r'\+\+'
+t_DECREMENT = r'--'
 
 def t_STRING(t):
     r'"[^"]*"'
@@ -111,7 +106,8 @@ lexer = lex.lex()
 
 def p_program(p):
     '''program : program statement
-               | statement'''
+               | statement
+               | empty'''
     if len(p) == 3:
         p[0] = p[1] + [p[2]]
     else:
@@ -124,20 +120,19 @@ def p_statement(p):
                  | struct_definition
                  | enum_definition
                  | namespace_definition
-                 | variable_declaration SEMI
+                 | variable SEMI
                  | interface_definition
-                 | return_statement SEMI'''
+                 | return_statement SEMI
+                 | use_statement'''
     p[0] = p[1]
 def p_expression_boolean_literals(p):
     '''expression : TRUE
                   | FALSE'''
     p[0] = ('bool_literal', p[1] == 'true')
 
-
 def p_namespace_definition(p):
-    '''namespace_definition : NAMESPACE ID LBRACE program RBRACE
-                            | NAMESPACE ID LBRACE RBRACE'''
-    p[0] = ('namespace_def', p[2], p[4])
+    '''namespace_definition : NAMESPACE ID block'''
+    p[0] = ('namespace_def', p[2], p[3])
 
 def p_return_statement(p):
     '''return_statement : RETURN expression'''
@@ -145,7 +140,10 @@ def p_return_statement(p):
 
 def p_block(p):
     '''block : LBRACE program RBRACE'''
-    p[0] = p[2]
+    if len(p) == 4 and p[2] != None:
+        p[0] = p[2]
+    else:
+        p[0] = []
 
 def p_type_with_generics(p):
     '''type_with_generics : ID LANGLE type_list RANGLE
@@ -174,7 +172,7 @@ def p_class_body(p):
         p[0] = []
 
 def p_class_member(p):
-    '''class_member : variable_declaration SEMI
+    '''class_member : variable SEMI
                     | function_definition'''
     p[0] = p[1]
 
@@ -188,8 +186,25 @@ def p_struct_body(p):
     else:
         p[0] = []
 
+def p_expression_postfix(p):
+    '''expression : expression INCREMENT
+                  | expression DECREMENT'''
+    if p[2] == '++':
+        p[0] = ('postfix_increment', p[1])
+    else:
+        p[0] = ('postfix_decrement', p[1])
+
+def p_expression_prefix(p):
+    '''expression : INCREMENT expression
+                  | DECREMENT expression'''
+
+    if p[1] == '++':
+        p[0] = ('prefix_increment', p[2])
+    else:
+        p[0] = ('prefix_decrement', p[2])
+
 def p_struct_member(p):
-    '''struct_member : variable_declaration SEMI
+    '''struct_member : variable SEMI
                      | function_definition'''
     p[0] = p[1]
 
@@ -220,6 +235,18 @@ def p_extends_opt(p):
 
 def p_type_specifier(p):
     '''type_specifier : ID
+                      | I8
+                      | I16
+                      | I32
+                      | I64
+                      | U8
+                      | U16
+                      | U32
+                      | U64
+                      | F32
+                      | F64
+                      | BOOL
+                      | STRING
                       | type_with_generics
                       | POINTER type_specifier
                       | REF type_specifier'''
@@ -240,12 +267,31 @@ def p_expression_boolean(p):
                   | expression LEQ expression
                   | expression GEQ expression
                   | NOT expression'''
-    if len(p) == 4:
-        p[0] = ('bool_expr', p[2], p[1], p[3])
+    p[0] = ('bool_expr', p[2], p[1], p[3])
 
 def p_for_loop(p):
-    '''statement : FOR ID IN expression RANGE expression LBRACE program RBRACE'''
-    p[0] = ('for_loop', p[2], p[4], p[6], p[8])
+    """
+    statement : for_block
+    """
+    # Extract the expression, which is in the 4th position for the first pattern
+    # and in the 5th position for the second pattern (with parentheses)
+    p[0] = ('for_loop', p[1])
+
+def p_for_block(p):
+    '''
+    for_block : FOR ID IN expression block
+              | FOR ID IN LPAREN expression RPAREN block
+    '''
+
+    expr = p[5] if len(p) == 8 else p[4]
+    p[0] = ('for_block', p[2], expr, p[7] if len(p) == 8 else None)
+
+def p_for_loop_with_else(p):
+    """
+    statement : for_block else_block
+    """
+    p[0] = ('for_loop_with_else', p[1], p[2])
+
 
 def p_expression_arith(p):
     '''expression : expression PLUS expression
@@ -267,7 +313,7 @@ def p_function_call(p):
 def p_arg_list_opt(p):
     '''arg_list_opt : arg_list
                     | empty'''
-    p[0] = p[1]
+    p[0] = p[1] if p[1] is not None else []
 
 def p_arg_list(p):
     '''arg_list : arg_list COMMA expression
@@ -281,16 +327,51 @@ def p_arg_list(p):
         p[0] = []
 
 # Conditional and loop statements
-def p_conditional_statement(p):
-    '''statement : IF LPAREN expression RPAREN LBRACE program RBRACE
-                 | IF LPAREN expression RPAREN LBRACE program RBRACE ELSE LBRACE program RBRACE'''
-    if len(p) == 8:
-        p[0] = ('if_stmt', p[3], p[6])
+
+def p_if_statement(p):
+    '''
+    statement : if_block else_if_blocks else_block
+              | if_block else_if_blocks
+              | if_block else_block
+              | if_block
+    '''
+    if_stmt = ('if_stmt', p[1])
+    if len(p) > 2:
+        # Append additional items directly to a tuple by concatenation
+        if_stmt += tuple(p[2:])
+    p[0] = if_stmt
+
+def p_if_block(p):
+    '''
+    if_block : IF expression block
+    '''
+    p[0] = ('if_block', p[2], p[3])
+
+def p_else_if_blocks(p):
+    '''
+    else_if_blocks : else_if_blocks else_if_block
+                   | else_if_block
+    '''
+    # This rule allows for recursion, supporting multiple else-if statements
+    if len(p) == 3:
+        p[0] = p[1] + [p[2]]
     else:
-        p[0] = ('if_else_stmt', p[3], p[6], p[10])
+        p[0] = [p[1]]
+
+def p_else_if_block(p):
+    '''
+    else_if_block : ELSE IF expression block
+    '''
+    p[0] = ('else_if_block', p[3], p[4])
+
+def p_else_block(p):
+    '''
+    else_block : ELSE block
+    '''
+    p[0] = ('else_block', p[2])
 
 def p_match_statement(p):
-    '''statement : MATCH LPAREN expression RPAREN LBRACE match_cases RBRACE'''
+    '''statement : MATCH expression LBRACE match_cases RBRACE'''
     p[0] = ('match_statement', p[3], p[6])
 
 def p_match_cases(p):
@@ -343,18 +424,25 @@ def p_use_statement(p):
     '''use_statement : USE qualified_name SEMI'''
     p[0] = ('use_module', p[2])
 
-
 def p_async_function_definition(p):
-    '''function_definition : ASYNC FN ID LPAREN parameters_opt RPAREN return_type_opt LBRACE program RBRACE'''
-    p[0] = ('async_function_def', p[3], p[5], p[7], p[9])
+    '''function_definition : ASYNC FN ID LPAREN parameters_opt RPAREN return_type_opt block'''
+    p[0] = ('async_function_def', p[3], p[5], p[7], p[8])
 
 def p_expression_await(p):
     '''expression : AWAIT expression'''
     p[0] = ('await_expression', p[2])
 
 def p_while_loop(p):
-    '''statement : WHILE LPAREN expression RPAREN LBRACE program RBRACE'''
-    p[0] = ('while_loop', p[3], p[6])
+    '''statement : while_block'''
+    p[0] = ('while_loop', p[1])
+
+def p_while_block(p):
+    '''while_block : WHILE expression block'''
+    p[0] = ('while_block', p[2], p[3])
+
+def p_while_loop_with_else(p):
+    '''statement : while_block else_block'''
+    p[0] = ('while_loop_with_else', p[1], p[2])
 
 # Handling empty productions
 def p_empty(p):
@@ -401,8 +489,7 @@ def p_return_type_opt(p):
         p[0] = ('return_type', 'void')
 
 def p_function_definition(p):
-    '''function_definition : FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt LBRACE program RBRACE
-                           | FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt LBRACE RBRACE'''
+    '''function_definition : FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt block'''
     function_name = p[2][1]  # Assuming the function name is always present
     # No need for parentheses in the output, they're part of the syntax, not the data structure
 
@@ -410,7 +497,7 @@ def p_function_definition(p):
     return_type = p[6]  # Capture the return type, which could be None or a specific type
 
     # For the function body, check if it's empty or contains statements
-    function_body = p[8] if len(p) > 8 else None
+    function_body = p[7] if len(p) == 8 else None
 
     p[0] = ('function_def', function_name, parameters, return_type, function_body)
 
@@ -442,25 +529,21 @@ def p_class_definition(p):
         base_class_id = None
         base_class_generics = None
 
-    # Updating the symbol table to include the new class definition
-    add_to_symbol_table(class_name, 'class')
-
     # Construct the tuple for the class definition including all the extracted information
     p[0] = ('class_def', class_name, class_generics, base_class_id, base_class_generics, p[5])
 
 
 def p_statement_error(p):
-    '''statement : variable_declaration '''
+    '''statement : variable '''
     p[0] = p[1]
 
-def p_statement_assign(p):
-    'statement : ID ASSIGN expression'
-    p[1] = p[3]
+def p_assign_statement(p):
+    '''statement : ID ASSIGN expression'''
+    p[0] = ('assign', p[1], p[3])
 
 def p_statement_expr(p):
     'statement : expression'
     print(p[1])
-
 
 def p_expression_error(p):
     'expression : error'
@@ -471,30 +554,27 @@ def p_expression_error(p):
     p[0] = ('error',)
 
 
-def p_variable_declaration(p):
-    '''variable_declaration : type_specifier ID LPAREN arg_list_opt RPAREN SEMI
-                            | type_specifier ID SEMI
-                            | type_specifier ID ASSIGN expression SEMI
-                            | type_specifier ID LBRACE arg_list_opt RBRACE SEMI
-                            | type_specifier ID ASSIGN NEW type_specifier LPAREN arg_list_opt RPAREN SEMI'''
-
-    if len(p) == 4:  # Simple variable declaration: type_specifier ID SEMI
+def p_variable(p):
+    '''
+    variable : type_specifier ID
+             | type_specifier ID ASSIGN expression
+             | type_specifier ID LPAREN arg_list_opt RPAREN
+             | type_specifier ID LBRACE arg_list_opt RBRACE
+             | type_specifier ID ASSIGN NEW type_specifier LPAREN arg_list_opt RPAREN
+             | type_specifier ID ASSIGN expression LPAREN arg_list_opt RPAREN
+    '''
+    if len(p) == 3:  # Simple variable declaration
         p[0] = ('variable_declaration', p[1], p[2])
-    elif len(p) == 6 and p[3] == 'ASSIGN':  # Simple assignment: type_specifier ID ASSIGN expression SEMI
-        p[0] = ('variable_assignment', p[1], p[2], p[4])
-    elif len(p) == 7:  # Object instantiation without assignment: type_specifier ID LBRACE arg_list_opt RBRACE SEMI
-        obj_type = lookup_symbol_table(p[1])
-        if obj_type in ['class', 'struct', 'enum']:
-            p[0] = ('object_instantiation', obj_type, p[1], p[2], p[4])
-        else:
-            raise SyntaxError(f"Type {p[1]} not a class, struct, or enum for instantiation.")
-    elif len(p) == 10:  # Variable declaration with 'new' for dynamic instantiation
-        obj_type = lookup_symbol_table(p[1])
-        if p[4] == "NEW":  # With 'new': type_specifier ID ASSIGN NEW type_specifier LPAREN arg_list_opt RPAREN SEMI
-            p[0] = ('object_dynamic_instantiation', obj_type, p[1], p[2], p[5], p[7])
-        else:
-            p[0] = ('variable_dynamic_instantiation', p[1], p[2], p[4], p[6])
-
+    elif len(p) == 5 and p[3] == '=':  # Variable assignment with initializer
+        p[0] = ('variable_initialization', p[1], p[2], p[4])
+    elif len(p) == 6 and p[3] == '(' and p[5] == ')':  # Function-like declaration
+        p[0] = ('variable_func_like_decl', p[1], p[2], p[4])
+    elif len(p) == 6 and p[3] == '{' and p[5] == '}':  # Brace initialization
+        p[0] = ('variable_brace_init', p[1], p[2], p[4])
+    elif len(p) == 10 and p[3] == '=':  # New type specifier with initializer
+        p[0] = ('variable_new_type_init', p[1], p[2], p[5], p[7], p[9])
+    elif len(p) == 7 and p[3] == '=':  # Assignment with expression and function call
+        p[0] = ('variable_expr_func_call', p[1], p[2], p[4], p[6])
 
 def p_interface_definition(p):
     '''interface_definition : INTERFACE type_with_generics LBRACE interface_body RBRACE'''
@@ -515,28 +595,28 @@ def p_struct_definition(p):
         p[6] = [(member[0], member[1], member[2] if len(member) > 2 else None) for member in p[6]]
     else:
         pass
-    add_to_symbol_table(p[2], 'class')
     p[0] = ('struct_def', p[2], p[3], p[4], p[6])
 
 def p_enum_definition(p):
     """enum_definition : ENUM type_with_generics LBRACE enum_body RBRACE"""
-    add_to_symbol_table(p[2], 'enum')
     p[0] = ('enum_def', p[2], p[4])
 
 
 def p_error(p):
-    if not p:
+    if p:
+        print(f"Syntax error at token {p.type} ('{p.value}') at line {p.lineno}")
+    else:
         print("Syntax error at EOF")
-        return
-
-    print(f"Syntax error at token ('{p.value}') at line {p.lineno}")
 
     # Attempt to recover by finding the next semicolon
     while True:
-        tok = yacc.token()  # Get the next token
-        if not tok or tok.type == 'SEMI':  # Stop at a semicolon or EOF
+        tok = p.lexer.token()  # Correctly get the next token from the lexer
+        if not tok:  # If no more tokens, break out of the loop
+            break
+        if tok.type == 'SEMI':  # Stop at a semicolon
             break
     yacc.errok()  # Reset the error flag to continue parsing
+
 
 parser = yacc.yacc(debug=True)
 
@@ -546,20 +626,36 @@ use std::io;
 
 namespace my_namespace 
 {
-    class my_class {
-        fn my_function() -> i32 {
+    class my_class<T> {
+        i32 x;
+        fn my_function(i32 x) -> i32 {
             
         }
     }
     
     fn main() -> i32 {
-        i32 x = 1;
-        match (x) {
-            1 => 1;
-            2 => 2;
-            _ => 3;
+        my_class<T> e;
+        
+        if (x <= 5) {
+            return 0;
+        } else if (x >= 5) {
+            return 1;
+        } else {
+            return 2;
         }
-    }   
+        
+        for x in y {
+            return 0;
+        } else {
+            return 1;
+        }
+        
+        while (x) {
+            return 0;
+        } else {
+            return 1;
+        }
+    }
 }
 '''
 
