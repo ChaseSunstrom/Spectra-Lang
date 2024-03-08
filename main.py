@@ -12,8 +12,7 @@ reserved = {
     'override': 'OVERRIDE', 'new': 'NEW', 'delete': 'DELETE',
     'try': 'TRY', 'catch': 'CATCH', 'finally': 'FINALLY', 'i32': 'I32', 'i64': 'I64',
     'f32': 'F32', 'f64': 'F64', 'u32': 'U32', 'u64': 'U64', 'bool': 'BOOL', 'void': 'VOID',
-    'var': 'VAR', 'string': 'STRING', 'i8': 'I8', 'i16': 'I16', 'i32': 'I32', 'i64': 'I64',
-    'u8': 'U8', 'u16': 'U16',
+    'var': 'VAR', 'string': 'STRING', 'i8': 'I8', 'i16': 'I16', 'u8': 'U8', 'u16': 'U16', 'type': 'TYPE',
     'namespace': 'NAMESPACE', 'ref': 'REF', 'analyze': 'ANALYZE', 'move': 'MOVE',
     'copy': 'COPY', 'operator': 'OPERATOR', 'macro': 'MACRO', 'const': 'CONST',
     'static': 'STATIC', 'defer': 'DEFER', 'unsafe': 'UNSAFE', 'export': 'EXPORT',
@@ -23,7 +22,7 @@ reserved = {
 tokens = [
     'NUMBER', 'ID', 'ASSIGN', 'SEMI', 'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'ALL',
     'ARM', 'POINTER', 'REFERENCE', 'LTHEN', 'RTHEN', 'LBRACKET', 'RBRACKET', 'DOUBLE_COLON',
-    'LEQ', 'GEQ', 'NEQ', 'EQ', 'OR', 'AND', 'AT', 'NOT',
+    'LEQ', 'GEQ', 'NEQ', 'EQ', 'OR', 'AND', 'AT', 'NOT', 'COLON',
     'LBRACE', 'RBRACE', 'LPAREN', 'RPAREN', 'LANGLE', 'RANGLE', 'RANGE', 'RANGE_INCLUSIVE',
     'COMMA', 'ARROW', 'UNDERSCORE', 'INCREMENT', 'DECREMENT'
 ] + list(reserved.values())
@@ -39,6 +38,7 @@ precedence = (
 
 # Tokens rules
 t_DOUBLE_COLON = r'::'
+t_COLON = r':'
 t_NOT = r'!'
 t_ALL = r'\*'
 t_PLUS = r'\+'
@@ -155,7 +155,7 @@ def p_type_with_generics(p):
         p[0] = ('type_with_generics', p[1])
 
 def p_type_list(p):
-    '''type_list : type_list COMMA type_specifier
+    '''type_list : type_list PLUS type_specifier
                  | type_specifier'''
     if len(p) == 4:
         p[0] = p[1] + [p[3]]
@@ -233,6 +233,30 @@ def p_extends_opt(p):
     else:
         p[0] = None  # No extension
 
+def p_generic_param_list(p):
+    '''generic_param_list : LANGLE generic_params RANGLE'''
+    if len(p) == 4:
+        p[0] = ('generic_params', p[2], None)
+    else:
+        p[0] = ('generic_params', p[2], p[4])
+
+def p_generic_params(p):
+    '''generic_params : generic_params COMMA generic_param
+                      | generic_param'''
+    if len(p) == 4:
+        p[0] = p[1] + [p[3]]
+    else:
+        p[0] = [p[1]]
+
+def p_generic_param(p):
+    '''generic_param : ID
+                     | type_specifier ID'''
+    if len(p) == 2:
+        p[0] = ('type_param', p[1])
+    else:
+        p[0] = ('value_param', p[1], p[2])
+
+
 def p_type_specifier(p):
     '''type_specifier : ID
                       | I8
@@ -247,6 +271,8 @@ def p_type_specifier(p):
                       | F64
                       | BOOL
                       | STRING
+                      | VOID
+                      | TYPE
                       | type_with_generics
                       | POINTER type_specifier
                       | REF type_specifier'''
@@ -280,17 +306,13 @@ def p_for_loop(p):
 def p_for_block(p):
     '''
     for_block : FOR ID IN expression block
-              | FOR ID IN LPAREN expression RPAREN block
+              | FOR LPAREN ID IN expression RPAREN block
     '''
 
+    id = p[2] if len(p) == 6 else p[3]
     expr = p[5] if len(p) == 8 else p[4]
-    p[0] = ('for_block', p[2], expr, p[7] if len(p) == 8 else None)
-
-def p_for_loop_with_else(p):
-    """
-    statement : for_block else_block
-    """
-    p[0] = ('for_loop_with_else', p[1], p[2])
+    block = p[7] if len(p) == 8 else p[5]
+    p[0] = ('for_block', id, expr, block)
 
 
 def p_expression_arith(p):
@@ -440,10 +462,6 @@ def p_while_block(p):
     '''while_block : WHILE expression block'''
     p[0] = ('while_block', p[2], p[3])
 
-def p_while_loop_with_else(p):
-    '''statement : while_block else_block'''
-    p[0] = ('while_loop_with_else', p[1], p[2])
-
 # Handling empty productions
 def p_empty(p):
     'empty :'
@@ -488,49 +506,37 @@ def p_return_type_opt(p):
     else:
         p[0] = ('return_type', 'void')
 
+
 def p_function_definition(p):
-    '''function_definition : FN type_with_generics LPAREN parameters_opt RPAREN return_type_opt block'''
-    function_name = p[2][1]  # Assuming the function name is always present
-    # No need for parentheses in the output, they're part of the syntax, not the data structure
+    '''function_definition : FN ID generic_param_list LPAREN parameters_opt RPAREN return_type_opt block
+                           | FN ID LPAREN parameters_opt RPAREN return_type_opt block'''
+    function_name = p[2]
 
-    parameters = p[4]  # Directly take the parameters list
-    return_type = p[6]  # Capture the return type, which could be None or a specific type
-
-    # For the function body, check if it's empty or contains statements
-    function_body = p[7] if len(p) == 8 else None
-
-    p[0] = ('function_def', function_name, parameters, return_type, function_body)
+    # Check if generic parameters are present
+    if len(p) == 9:
+        generic_params = p[3][1]  # Extract generic params
+        constraints = p[3][2]  # Extract constraints from the 'where' clause
+        parameters = p[5]
+        return_type = p[7]
+        function_body = p[8]
+        p[0] = (
+        'function_definition', function_name, generic_params, constraints, parameters, return_type, function_body)
+    else:
+        # This branch handles functions without generic parameters
+        parameters = p[4]
+        return_type = p[6]
+        function_body = p[7]
+        p[0] = ('function_definition', function_name, None, None, parameters, return_type, function_body)
 
 
 def p_class_definition(p):
-    '''class_definition : CLASS type_with_generics extends_opt LBRACE class_body RBRACE'''
-    # Assuming type_with_generics could return either ('type_with_generics', ID, [generics])
-    # or just (ID,) when there are no generics
-    if isinstance(p[2], tuple) and len(p[2]) == 3:
-        # When generics are present
-        class_name = p[2][1]
-        class_generics = p[2][2]  # The generics list
-    elif isinstance(p[2], tuple) and len(p[2]) == 2:
-        # When there are no generics, and the rule returns a tuple with only ID
-        class_name = p[2][1]
-        class_generics = None
-    else:
-        # Fallback in case the structure is different than expected, adjust as necessary
-        class_name = p[2]
-        class_generics = None
-
-    extends_info = p[3]  # This is either None or a tuple ('extends', base_class_id, [base_class_generics])
-
-    if extends_info is not None and len(extends_info) > 1:
-        # Extract base class ID and optionally generics if provided
-        base_class_id = extends_info[1]
-        base_class_generics = extends_info[2] if len(extends_info) == 3 else None
-    else:
-        base_class_id = None
-        base_class_generics = None
-
-    # Construct the tuple for the class definition including all the extracted information
-    p[0] = ('class_def', class_name, class_generics, base_class_id, base_class_generics, p[5])
+    '''class_definition : CLASS ID generic_param_list extends_opt LBRACE class_body RBRACE'''
+    class_name = p[2]
+    generic_params = p[3][1]  # First element of the tuple returned by generic_param_list
+    constraints = p[3][2]  # Second element (may be None if no 'where' clause)
+    extends = p[4]
+    class_body = p[6]
+    p[0] = ('class_definition', class_name, generic_params, constraints, extends, class_body)
 
 
 def p_statement_error(p):
@@ -589,17 +595,23 @@ def p_interface_body(p):
         p[0] = []
 
 def p_struct_definition(p):
-    '''struct_definition : CLASS type_with_generics extends_opt LBRACE struct_body RBRACE'''
-    if p[4] is not None and p[4][2] is not None:
-        extended_class_generics = p[4][2]
-        p[6] = [(member[0], member[1], member[2] if len(member) > 2 else None) for member in p[6]]
-    else:
-        pass
-    p[0] = ('struct_def', p[2], p[3], p[4], p[6])
+    '''struct_definition : STRUCT ID generic_param_list extends_opt LBRACE struct_body RBRACE'''
+    struct_name = p[2]
+    generic_params = p[3][1]  # Extract generic params
+    constraints = p[3][2]  # Extract constraints from the 'where' clause
+    extends = p[4]
+    struct_body = p[6]
+    p[0] = ('struct_definition', struct_name, generic_params, constraints, extends, struct_body)
+
 
 def p_enum_definition(p):
-    """enum_definition : ENUM type_with_generics LBRACE enum_body RBRACE"""
-    p[0] = ('enum_def', p[2], p[4])
+    """enum_definition : ENUM ID generic_param_list LBRACE enum_body RBRACE"""
+    enum_name = p[2]
+    generic_params = p[3][1]  # Extract generic params
+    constraints = p[3][2]  # Extract constraints
+    enum_body = p[5]
+    p[0] = ('enum_definition', enum_name, generic_params, constraints, enum_body)
+
 
 
 def p_error(p):
@@ -622,41 +634,49 @@ parser = yacc.yacc(debug=True)
 
 # Testing the parser
 test_data = '''
+
 use std::io;
 
 namespace my_namespace 
 {
-    class my_class<T> {
+    class my_class <my_class T, i32 U>
+    {
         i32 x;
-        fn my_function(i32 x) -> i32 {
+        fn my_function(my_class<i32> x) -> i32 
+        {
             
         }
     }
     
-    fn main() -> i32 {
+    fn main() -> void 
+    {
         my_class<T> e;
         
-        if (x <= 5) {
+        if (my_function(x) == 0)
+        {
             return 0;
-        } else if (x >= 5) {
+        } 
+        else if (x >= 5) 
+        {
             return 1;
-        } else {
+        } 
+        else 
+        {
             return 2;
         }
         
-        for x in y {
+        for (x in y) 
+        {
             return 0;
-        } else {
-            return 1;
         }
         
-        while (x) {
+        while (x) 
+        {
             return 0;
-        } else {
-            return 1;
         }
     }
 }
+
 '''
 
 def print_ast(node, level=0):
@@ -683,3 +703,5 @@ def print_ast(node, level=0):
 # Usage example
 ast = parser.parse(test_data)  # Assume this is your AST from the parser
 print_ast(ast)
+
+print(ast)
